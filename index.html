@@ -357,6 +357,7 @@ tr.section-drag-over td{border-top:3px solid var(--blue) !important}
 /* ── COPY PASTE ── */
 .cell.copied{outline:2px dashed var(--blue);outline-offset:-2px}
 .cell.focused{outline:2px solid var(--blue);outline-offset:-2px;z-index:2}
+.cell.selected{outline:2px solid #f59e0b;outline-offset:-2px;z-index:2;background-blend-mode:overlay}
 .cell.paste-preview{outline:2px dashed #22c55e;outline-offset:-2px;opacity:.7}
 /* copy toolbar moved to sidebar */
 
@@ -1419,33 +1420,51 @@ document.addEventListener('keydown',e=>{
 
   if(!canAssignShift()) return; // Ctrl+C/V only for managers+
 
-  // Ctrl+C — copy focused cell (shift + OT)
+  // Ctrl+C — copy focused/selected cell
   if(ctrl&&e.key==='c'){
     e.preventDefault();
-    if(!lastFocusedCell){toast('Click a cell first to select it','err');return;}
-    const sh=getS(lastFocusedCell.sid, lastFocusedCell.day);
-    if(!sh){toast('No shift on selected cell to copy','err');return;}
+    const src=lastFocusedCell;
+    if(!src){toast('Click a cell first','err');return;}
+    const sh=getS(src.sid, src.day);
+    if(!sh){toast('No shift on selected cell','err');return;}
+    // Look up OT with all possible key formats
     const mk=cy+'-'+(cm+1);
-    const ot=otData[lastFocusedCell.sid+'_'+lastFocusedCell.day+'_'+mk]
-           ||otData[lastFocusedCell.sid+'_'+lastFocusedCell.day]||null;
-    copySource={...lastFocusedCell, shift:sh, ot:ot?{...ot}:null};
+    const ot=otData[src.sid+'_'+src.day+'_'+mk]
+           ||otData[src.sid+'_'+src.day]
+           ||null;
+    copySource={...src, shift:sh, ot:ot?{...ot}:null};
     const ct=document.getElementById('copyToolbar');
     const cl=document.getElementById('copyLabel');
     if(ct) ct.style.display='flex';
     const otLabel=ot?` + OT ${ot.hours}h`:'';
-    if(cl) cl.textContent=`"${sh}"${otLabel} copied — click target cell, then Ctrl+V`;
+    if(cl) cl.textContent=`"${sh}"${otLabel} copied — click cells then Ctrl+V`;
     showSidebarActionPanel();
     renderSchedule();
     toast(`Copied "${sh}"${otLabel} ✓`,'ok');
     return;
   }
 
-  // Ctrl+V — paste shift + OT to focused cell
+  // Ctrl+V — paste to focused cell OR all selected cells
   if(ctrl&&e.key==='v'){
     e.preventDefault();
-    if(!copySource){toast('Nothing copied — Ctrl+C a cell first','err');return;}
-    if(!lastFocusedCell){toast('Click a target cell first','err');return;}
-    doPaste(lastFocusedCell.sid, lastFocusedCell.day);
+    if(!copySource){toast('Nothing copied — Ctrl+C first','err');return;}
+    // If multi-select active, paste to all selected cells
+    if(selectedCells.length>1){
+      const cells=[...selectedCells];
+      (async()=>{
+        for(const c of cells){
+          await saveShift(c.sid, c.day, copySource.shift);
+          if(copySource.ot) await saveOT(c.sid, c.day, copySource.ot.hours, copySource.ot.start, copySource.ot.end, copySource.ot.type||'OT');
+        }
+        const otLabel=copySource.ot?` + OT`:'';
+        toast(`Pasted "${copySource.shift}"${otLabel} to ${cells.length} cells ✓`,'ok');
+        selectedCells=[];
+      })();
+    } else if(lastFocusedCell){
+      doPaste(lastFocusedCell.sid, lastFocusedCell.day);
+    } else {
+      toast('Click a target cell first','err');
+    }
     return;
   }
 
@@ -1876,6 +1895,7 @@ function renderSchedule(){
           }
           const isCopied=copySource&&copySource.sid===x.id&&copySource.day===d;
           const isFocused=!isCopied&&lastFocusedCell&&lastFocusedCell.sid===x.id&&lastFocusedCell.day===d;
+          const isSelected=!isCopied&&selectedCells.some(c=>c.sid===x.id&&c.day===d);
           const cellCanAssign=canAssignShift();
           // Check for pending leave request on this cell
           const pendKey=x.id+'_'+d+'_'+(vd.year||cy)+'-'+((vd.month!==undefined?vd.month:cm)+1);
@@ -1911,7 +1931,7 @@ function renderSchedule(){
                   ${isApprover2?`onclick="switchTab('requests')"`:''}>
                   ${pendCode}<div class="cell-pending-dot" style="background:#d97706"></div>
                 </div>`
-              : `<div class="cell shift-main ${cls}${cellCanAssign?' editable':''}${isCopied?' copied':''}${isFocused?' focused':''}" ${cellStyle} data-sid="${x.id}" data-day="${d}" data-name="${x.name.replace(/"/g,'&quot;')}" title="${sh?(()=>{const sd=shiftTypes.find(x=>x.code===sh);return sd?sh+' '+sd.label+(sd.start?' '+sd.start+'–'+sd.end:''):sh;})():''}" ${cellCanAssign?`onclick="handleCellClick(this.dataset.sid,this.dataset.day,this.dataset.name,event)" ondblclick="handleCellDblClick(this.dataset.sid,this.dataset.day,this.dataset.name,event)"`:''}>${disp}</div>`
+              : `<div class="cell shift-main ${cls}${cellCanAssign?' editable':''}${isCopied?' copied':''}${isFocused?' focused':''}${isSelected?' selected':''}" ${cellStyle} data-sid="${x.id}" data-day="${d}" data-name="${x.name.replace(/"/g,'&quot;')}" title="${sh?(()=>{const sd=shiftTypes.find(x=>x.code===sh);return sd?sh+' '+sd.label+(sd.start?' '+sd.start+'–'+sd.end:''):sh;})():''}" ${cellCanAssign?`onclick="handleCellClick(this.dataset.sid,this.dataset.day,this.dataset.name,event)" ondblclick="handleCellDblClick(this.dataset.sid,this.dataset.day,this.dataset.name,event)"`:''}>${disp}</div>`
             }
             <div class="ot-cell ${ot&&!isPreShift?'has-ot ot-below editable-ot':(otClickable&&!ot?'no-ot editable-empty ot-below':'no-ot ot-below')}"
               style="${ot&&!isPreShift?'background:'+otColor+';':''}"
@@ -3545,20 +3565,39 @@ function can(action){
 }
 
 
-// ── COPY / PASTE ──
+// ── COPY / PASTE / MULTI-SELECT ──
+let selectedCells=[]; // array of {sid, day} for multi-select
+
 function handleCellClick(sid, day, name, e){
   if(!canAssignShift()) return;
   e.stopPropagation();
-  // Paste mode — paste immediately
+
+  // Paste mode — paste immediately to clicked cell
   if(copySource){
     clearTimeout(_clickTimer);
     doPaste(sid, day);
     return;
   }
-  // Use short debounce only to distinguish from dblclick
+
+  // Shift+click = add to multi-selection
+  if(e.shiftKey){
+    clearTimeout(_clickTimer);
+    const idx=selectedCells.findIndex(c=>c.sid===sid&&c.day===day);
+    if(idx>=0) selectedCells.splice(idx,1); // toggle off
+    else selectedCells.push({sid,day,name});
+    lastFocusedCell={sid,day};
+    renderSchedule();
+    const n=selectedCells.length;
+    toast(`${n} cell${n>1?'s':''} selected — Ctrl+C to copy, or double-click to assign`,'ok');
+    return;
+  }
+
+  // Normal single click — debounce to detect dblclick
   clearTimeout(_clickTimer);
   _clickTimer=setTimeout(()=>{
     _clickTimer=null;
+    // Single click = set as focused cell (clear multi-select)
+    selectedCells=[];
     lastFocusedCell={sid, day};
     renderSchedule();
   }, 180);
@@ -3568,9 +3607,10 @@ function handleCellDblClick(sid, day, name, e){
   if(!canAssignShift()) return;
   e.stopPropagation();
   e.preventDefault();
-  clearTimeout(_clickTimer); // cancel the pending single-click
+  clearTimeout(_clickTimer);
   _clickTimer=null;
   if(copySource) clearCopyMode();
+  selectedCells=[];
   lastFocusedCell={sid, day};
   openShiftModal(sid, day, name);
 }
@@ -3679,6 +3719,7 @@ async function pasteToNextAgent(){
 function clearCopyMode(){
   copySource=null;
   lastFocusedCell=null;
+  selectedCells=[];
   const ct=document.getElementById('copyToolbar');
   if(ct) ct.style.display='none';
   updateSidebarActionPanel();
