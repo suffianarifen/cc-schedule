@@ -343,6 +343,7 @@ thead .sticky{background:var(--surface2);z-index:3}
 .cov-cell-low{background:#fef9c3;color:#854d0e;font-weight:500}
 .cov-cell-mid{background:#dcfce7;color:#14532d;font-weight:500}
 .cov-cell-high{background:#bbf7d0;color:#14532d;font-weight:600}
+#covPopup{position:fixed;z-index:500;background:var(--surface);border:1px solid var(--border2);border-radius:var(--rl);padding:10px 12px;box-shadow:0 4px 20px rgba(0,0,0,.2);pointer-events:none;display:none;min-width:140px;max-width:220px}
 .cov-pos-header{background:var(--surface2);font-weight:600;font-size:11px;color:var(--text);padding:6px 10px;border-top:2px solid var(--border2)}
 
 /* ── DRAG REORDER ── */
@@ -901,6 +902,7 @@ tr.section-drag-over td{border-top:3px solid var(--blue) !important}
 </div>
 
 <!-- TOAST -->
+<div id="covPopup"></div>
 <div id="toastArea"></div>
 
 <script>
@@ -1932,10 +1934,9 @@ function renderSchedule(){
                   ${pendCode}<div class="cell-pending-dot" style="background:#d97706"></div>
                 </div>`
               : `<div class="cell shift-main ${cls}${cellCanAssign?' editable':''}${isCopied?' copied':''}${isFocused?' focused':''}${isSelected?' selected':''}" ${cellStyle} data-sid="${x.id}" data-day="${d}" data-name="${x.name.replace(/"/g,'&quot;')}" title="${sh?(()=>{const sd=shiftTypes.find(x=>x.code===sh);return sd?sh+' '+sd.label+(sd.start?' '+sd.start+'–'+sd.end:''):sh;})():''}" ${cellCanAssign?`
-                onclick="handleCellClick(this.dataset.sid,this.dataset.day,this.dataset.name,event)"
-                ondblclick="handleCellDblClick(this.dataset.sid,this.dataset.day,this.dataset.name,event)"
-                onmousedown="handleCellMouseDown(this.dataset.sid,this.dataset.day,event)"
+                onmousedown="handleCellMouseDown(this.dataset.sid,this.dataset.day,this.dataset.name,event)"
                 onmouseenter="handleCellMouseEnter(this.dataset.sid,this.dataset.day,event)"
+                ondblclick="handleCellDblClick(this.dataset.sid,this.dataset.day,this.dataset.name,event)"
               `:''}>${disp}</div>`
             }
             <div class="ot-cell ${ot&&!isPreShift?'has-ot ot-below editable-ot':(otClickable&&!ot?'no-ot editable-empty ot-below':'no-ot ot-below')}"
@@ -3570,88 +3571,59 @@ function can(action){
 }
 
 
-// ── COPY / PASTE / MULTI-SELECT ──
-let selectedCells=[]; // array of {sid, day} for multi-select
-let isDragging=false; // true while mouse is held down dragging across cells
+// ── CELL INTERACTION STATE MACHINE ──
+let selectedCells=[];
+let isDragging=false;
+let _mouseDownCell=null;
+let _mouseDownTime=0;
 
-function handleCellClick(sid, day, name, e){
-  if(!canAssignShift()) return;
-  e.stopPropagation();
+function handleCellMouseDown(sid, day, name, e){
+  if(!canAssignShift()||e.button!==0) return;
+  e.preventDefault();
 
-  // Paste mode — paste immediately to clicked cell
-  if(copySource){
-    clearTimeout(_clickTimer);
-    doPaste(sid, day);
-    return;
-  }
+  // Paste mode — paste immediately
+  if(copySource){ doPaste(sid,day); return; }
 
-  // Shift+click = add to multi-selection
-  if(e.shiftKey){
-    clearTimeout(_clickTimer);
-    const idx=selectedCells.findIndex(c=>c.sid===sid&&c.day===day);
-    if(idx>=0) selectedCells.splice(idx,1); // toggle off
-    else selectedCells.push({sid,day,name});
+  _mouseDownCell={sid,day,name};
+  _mouseDownTime=Date.now();
+  isDragging=false;
+  selectedCells=[{sid,day}];
+  lastFocusedCell={sid,day};
+  renderSchedule();
+}
+
+function handleCellMouseEnter(sid, day, e){
+  if(!canAssignShift()||!(e.buttons&1)||!_mouseDownCell||copySource) return;
+  // Only start drag after moving to a different cell
+  if(_mouseDownCell.sid===sid&&_mouseDownCell.day===day) return;
+  isDragging=true;
+  if(!selectedCells.some(c=>c.sid===sid&&c.day===day)){
+    selectedCells.push({sid,day});
     lastFocusedCell={sid,day};
     renderSchedule();
-    const n=selectedCells.length;
-    toast(`${n} cell${n>1?'s':''} selected — Ctrl+C to copy, or double-click to assign`,'ok');
-    return;
   }
-
-  // Normal single click — debounce to detect dblclick
-  clearTimeout(_clickTimer);
-  _clickTimer=setTimeout(()=>{
-    _clickTimer=null;
-    // If drag just selected multiple cells, don't reset on click
-    if(selectedCells.length>1) return;
-    selectedCells=[];
-    lastFocusedCell={sid, day};
-    renderSchedule();
-  }, 180);
 }
 
 function handleCellDblClick(sid, day, name, e){
   if(!canAssignShift()) return;
-  e.stopPropagation();
   e.preventDefault();
-  clearTimeout(_clickTimer);
-  _clickTimer=null;
-  if(copySource) clearCopyMode();
+  if(copySource){clearCopyMode();return;}
   selectedCells=[];
-  lastFocusedCell={sid, day};
-  openShiftModal(sid, day, name);
+  lastFocusedCell={sid,day};
+  openShiftModal(sid,day,name);
 }
 
-function handleCellMouseDown(sid, day, e){
-  if(!canAssignShift()) return;
-  if(e.button!==0) return; // left click only
-  if(copySource) return; // in paste mode, let click handle it
-  isDragging=true;
-  // Start fresh selection
-  selectedCells=[{sid, day}];
-  lastFocusedCell={sid, day};
-  renderSchedule();
-  e.preventDefault(); // prevent text selection while dragging
-}
-
-function handleCellMouseEnter(sid, day, e){
-  if(!isDragging||!canAssignShift()) return;
-  if(copySource) return;
-  // Add to selection if not already there
-  if(!selectedCells.some(c=>c.sid===sid&&c.day===day)){
-    selectedCells.push({sid, day});
-    lastFocusedCell={sid, day};
+document.addEventListener('mouseup',()=>{
+  if(!_mouseDownCell) return;
+  if(!isDragging){
+    // True single click — just focus, no multi-select
+    selectedCells=[];
     renderSchedule();
+  } else if(selectedCells.length>1){
+    toast(`${selectedCells.length} cells selected — Ctrl+V to paste`,'ok');
   }
-}
-
-// Stop drag on mouseup anywhere
-document.addEventListener('mouseup', e=>{
-  if(isDragging){
-    isDragging=false;
-    const n=selectedCells.length;
-    if(n>1) toast(`${n} cells selected — Ctrl+V to paste`,'ok');
-  }
+  isDragging=false;
+  _mouseDownCell=null;
 });
 
 function openShiftModal(sid, day, name){
@@ -4564,17 +4536,30 @@ function renderCoverage(){
       const timeLabel=`${hour}:00 – ${hour+1}:00`;
       html+=`<tr><td class="cov-label">${timeLabel}</td>`;
       viewDays.forEach(vd=>{
-        // Count staff working during this hour
+        // Count staff working during this hour and collect their names
         let count=0;
+        const working=[];
         posStaff.forEach(s=>{
           const sh=getS(s.id,vd.day,vd.month,vd.year);
           const otObj=getOT(s.id,vd.day);
-          if(isWorkingDuringHour(sh,hour,otObj)) count++;
+          if(isWorkingDuringHour(sh,hour,otObj)){
+            count++;
+            // Short name — first name only for readability
+            const shortName=s.name.split(' ')[0];
+            working.push(shortName);
+          }
         });
         const total=posStaff.length;
         const pct=total>0?count/total:0;
         const cls=count===0?'cov-cell-0':pct<0.3?'cov-cell-low':pct<0.7?'cov-cell-mid':'cov-cell-high';
-        html+=`<td class="${cls}" title="${count}/${total} ${pos} working at ${timeLabel}">${count||'—'}</td>`;
+        const tooltip=count===0
+          ?`No ${pos} working at ${timeLabel}`
+          :`${count}/${total} working at ${timeLabel}:\n${working.join(', ')}`;
+        const popupHtml=count===0
+          ?`<div style="font-size:11px;color:var(--text3)">Nobody working</div>`
+          :`<div style="font-size:11px;font-weight:600;color:var(--text);margin-bottom:4px">${count}/${total} working</div>`+
+           working.map(n=>`<div style="font-size:11px;color:var(--text2)">· ${n}</div>`).join('');
+        html+=`<td class="${cls} cov-hover-cell" data-popup="${encodeURIComponent(popupHtml)}" style="cursor:default;position:relative">${count||'—'}</td>`;
       });
       html+='</tr>';
     });
@@ -4582,6 +4567,24 @@ function renderCoverage(){
 
   html+='</tbody></table>';
   grid.innerHTML=html;
+
+  // Hover popup for coverage cells
+  const popup=document.getElementById('covPopup');
+  grid.querySelectorAll('.cov-hover-cell').forEach(td=>{
+    td.addEventListener('mouseenter',e=>{
+      const html=decodeURIComponent(td.dataset.popup||'');
+      popup.innerHTML=html;
+      popup.style.display='block';
+      const r=td.getBoundingClientRect();
+      let left=r.right+8;
+      let top=r.top;
+      if(left+220>window.innerWidth) left=r.left-228;
+      if(top+200>window.innerHeight) top=window.innerHeight-210;
+      popup.style.left=left+'px';
+      popup.style.top=top+'px';
+    });
+    td.addEventListener('mouseleave',()=>{popup.style.display='none';});
+  });
 
   // Legend
   legend.innerHTML=`
