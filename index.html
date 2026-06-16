@@ -914,7 +914,7 @@ var { createClient } = supabase;
 var sb = createClient(SUPABASE_URL, SUPABASE_ANON_KEY, {
   auth:{
     flowType:'pkce',
-    redirectTo:'https://xoxcc-operationschedule.netlify.app'
+    redirectTo:'https://suffianarifen.github.io/cc-schedule'
   }
 });
 
@@ -2966,7 +2966,7 @@ async function doForgotPassword(){
   errEl.textContent='Sending…';
 
   const {error}=await sb.auth.resetPasswordForEmail(email,{
-    redirectTo:'https://xoxcc-operationschedule.netlify.app'
+    redirectTo:'https://suffianarifen.github.io/cc-schedule'
   });
 
   document.getElementById('fpBtns').style.display='none';
